@@ -5,18 +5,17 @@ import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/utils/Address.sol";
 import "@openzeppelin/contracts/token/ERC20/SafeERC20.sol";
 
-interface IStrategy{
+interface IStrategy {
     function vault() external view returns (address);
-
 }
 
 //for version 0.3.1 or above of base strategy
 
-contract SharerV3 {
+contract SharerV4 {
     using SafeERC20 for IERC20;
     using Address for address;
     using SafeMath for uint256;
-    
+
     event ContributorsSet(address indexed strategy, address[] contributors, uint256[] numOfShares);
     event Distribute(address indexed strategy, uint256 totalDistributed);
 
@@ -25,25 +24,24 @@ contract SharerV3 {
         uint256 numOfShares;
     }
     mapping(address => Contributor[]) public shares;
-    address public strategistMs;
-    address public pendingStrategistMs;
-
+    address public governance;
+    address public pendingGovernance;
 
     constructor() public {
-        strategistMs = msg.sender;
+        governance = msg.sender;
     }
 
-    function changeStratMs(address _ms) external {
-        require(msg.sender == strategistMs);
-        pendingStrategistMs = _ms;
+    function setGovernance(address _governance) external {
+        require(msg.sender == governance);
+        pendingGovernance = _governance;
     }
 
-    function acceptStratMs() external {
-        require(msg.sender == pendingStrategistMs);
-        strategistMs = pendingStrategistMs;
+    function acceptGovernance() external {
+        require(msg.sender == pendingGovernance);
+        governance = pendingGovernance;
     }
 
-    function viewContributors(address strategy) public view returns (Contributor[] memory){
+    function viewContributors(address strategy) public view returns (Contributor[] memory) {
        return shares[strategy];
     }
 
@@ -52,8 +50,7 @@ contract SharerV3 {
     // If sum of total shares set < 1,000, any remainder of shares will go to strategist multisig
     function setContributors(address strategy, address[] calldata _contributors, uint256[] calldata _numOfShares) public {
         require(_contributors.length == _numOfShares.length, "length not the same");
-
-        require(shares[strategy].length == 0 || msg.sender == strategistMs, "Only Strat MS can overwrite");
+        require(shares[strategy].length == 0 || msg.sender == governance, "!authorized");
 
         delete shares[strategy];
         uint256 totalShares = 0;
@@ -62,33 +59,44 @@ contract SharerV3 {
             totalShares = totalShares.add(_numOfShares[i]);
             shares[strategy].push(Contributor(_contributors[i], _numOfShares[i]));
         }
+
         require(totalShares <= 1000, "share total more than 100%");
         emit ContributorsSet(strategy, _contributors, _numOfShares);
     }
 
+    function distributeMultiple(address[] calldata _strategies) public {
+        for(uint256 i = 0; i < _strategies.length; i++) {
+            distribute(_strategies[i]);
+        }
+    }
 
-    function distribute(address _strategy) public{
+    function distribute(address _strategy) public {
         IStrategy strategy = IStrategy(_strategy);
-        IERC20 reward =  IERC20(strategy.vault());
-        
+        IERC20 reward = IERC20(strategy.vault());
+
         uint256 totalRewards = reward.balanceOf(_strategy);
-        if(totalRewards <= 1000){
+        if(totalRewards <= 1000) {
            return;
         }
         uint256 remainingRewards = totalRewards;
-
         Contributor[] memory contributorsT = shares[_strategy];
-        for(uint256 i = 0; i < contributorsT.length; i++ ){
+
+        // Distribute rewards to everyone but the last person
+        for(uint256 i = 0; i < contributorsT.length-1; i++ ) {
                 address cont = contributorsT[i].contributor;
                 uint256 share = totalRewards.mul(contributorsT[i].numOfShares).div(1000);
                 reward.safeTransferFrom(_strategy, cont, share);
                 remainingRewards -= share;
         }
-        reward.safeTransferFrom(_strategy, strategistMs, remainingRewards);
+
+        // Last person takes the reminder
+        address _last = contributorsT[contributorsT.length-1].contributor;
+        reward.safeTransferFrom(_strategy, _last, remainingRewards);
+
         emit Distribute(_strategy, totalRewards);
     }
 
-    function checkBalance(address _strategy) public view returns(uint256){
+    function checkBalance(address _strategy) public view returns(uint256) {
         IStrategy strategy = IStrategy(_strategy);
         IERC20 reward =  IERC20(strategy.vault());
         return reward.balanceOf(_strategy);
